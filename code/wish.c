@@ -14,6 +14,29 @@
 
 // NEED TO ADD CONSTANTS INSTEAD OF HARD CODED VALUES
 
+char *trimWhitespace(char *str) {
+    if (str == NULL) return NULL;
+
+    // 1. Advance past leading spaces
+    while (isspace((unsigned char)*str)) {
+        str++;
+    }
+
+    // If string is all spaces, return the empty string
+    if (*str == '\0') {
+        return str;
+    }
+
+    // 2. Trim trailing spaces
+    char *end = str + strlen(str) - 1;
+    while (end > str && isspace((unsigned char)*end)) {
+        *end = '\0';
+        end--;
+    }
+
+    return str;
+}
+
 void handleError() {
   char error_message[30] = "An error has occurred\n";
   write(STDERR_FILENO, error_message, strlen(error_message));
@@ -33,6 +56,18 @@ void handleCdCommand(char *args[]) {
           }
       }
   }
+}
+
+// Function to construct the full path and check if the file exists
+int constructAndCheckPath(char *out_ptr, char *path[], char *full_path) {
+  for (int idx = 0; path[idx] != NULL; ++idx) {
+      snprintf(full_path, PATH_MAX, "%s/%s", path[idx], out_ptr);
+
+      if (access(full_path, X_OK) == 0) {
+          return 1;  // File found and executable
+      }
+  }
+  return 0;  // File not found in any path
 }
 
 void handleExitCommand() {
@@ -58,15 +93,11 @@ void handleExternalCommand(int command_exists_flag, char *full_path, char *args[
       pid_t pid = fork();
       if (pid == 0) {
           //printf("FULL PATH: %s\n", full_path);
-          for (int i = 0; args[i] != NULL; i++) {
-              printf("%s", args[i]);
-          }
-
           // Child process: Execute the command
           execv(full_path, args);
           // If execv fails, exit the child process
-          perror("execv failed");
-          exit(1);
+          //perror("execv failed");
+          //exit(1);
       } else if (pid == -1) {
           // Fork failed
           perror("fork failed");
@@ -89,17 +120,90 @@ void handleCommand(char *args[], char *path[], int command_exists_flag, char *fu
   }
 }
 
-// Function to construct the full path and check if the file exists
-int constructAndCheckPath(char *out_ptr, char *path[], char *full_path) {
-  for (int idx = 0; path[idx] != NULL; ++idx) {
-      snprintf(full_path, PATH_MAX, "%s/%s", path[idx], out_ptr);
-
-      if (access(full_path, X_OK) == 0) {
-          return 1;  // File found and executable
+void handleRedirectionCommand(int command_exists_flag, char *full_path, char *args[], char *output) {
+  //printf("%d\n", 1);
+  //printf("Command FLAG: %d\n", command_exists_flag);
+  if (command_exists_flag == 1) {
+      pid_t pid = fork();
+      if (pid == 0) {
+          // Open the file and redirect stdout to it
+          freopen(output, "w", stdout);
+          //printf("FULL PATH: %s\n", full_path);
+          // Child process: Execute the command
+          execv(full_path, args);
+          freopen("/dev/tty", "w", stdout);
+          // If execv fails, exit the child process
+          //perror("execv failed");
+          //exit(1);
+      } else if (pid == -1) {
+          // Fork failed
+          perror("fork failed");
       }
+  } else {
+      // Command not found: Print an error
+      handleError();
   }
-  return 0;  // File not found in any path
 }
+
+// Create function for dealing with redirection
+void handleRedirection(char *redirection, char *path[], char *full_path) {
+    // Need to break apart the command into 2 sections
+    // 1. Command part
+    // 2. Redirection into output file
+
+    char *out_ptr;
+    char *in_ptr = redirection;
+    const char *del = ">";
+    const char *del1 = " ";
+
+    char *command;
+    char *output_file;
+
+    // Check for ampersand first to split it up by multiple commands
+    int i = 0;
+    while ((out_ptr = strsep(&in_ptr, del)) != NULL) {
+        out_ptr = trimWhitespace(out_ptr);
+
+        // Skip empty commands
+        if (strlen(out_ptr) == 0) {
+            continue;
+        }
+        if (i == 0) {
+            command = out_ptr;
+        } else if (i == 1) {
+            output_file = out_ptr;
+        } else {
+            // There is multiple files after redirection so return the error code
+            handleError();
+        }
+        i++;
+    }
+
+    in_ptr = command;
+
+    char *args[50] = {NULL};
+    int command_exists_flag = 0;
+
+    int idx = 0;
+    while ((out_ptr = strsep(&in_ptr, del1)) != NULL) {
+        args[idx] = out_ptr;
+        idx++;
+    }
+    args[idx] = NULL;  // Null-terminate the args array
+    // Now we need to complete this command
+    // Check Path
+    command_exists_flag = constructAndCheckPath(args[0], path, full_path);
+    // Handle Command
+    handleRedirectionCommand(command_exists_flag, full_path, args, output_file);
+
+    // Now to create an output file with the contents of the command in it
+
+    // Now handle the command and it will go into that file
+
+    printf("HANDLING REDIRECTION!\n");
+}
+
+
 
 
 // Function to split the command into arguments
@@ -124,15 +228,7 @@ void splitCommand(char *command, char *path[]) {
   // Check for ampersand first to split it up by multiple commands
 
   while ((out_ptr = strsep(&in_ptr, del1)) != NULL) {
-      // Trim leading and trailing whitespace
-      // Trim leading spaces
-      while (isspace((unsigned char)*out_ptr)) out_ptr++;
-      // Trim trailing spaces
-      char *end = out_ptr + strlen(out_ptr) - 1;
-      while (end > out_ptr && isspace((unsigned char)*end)) {
-          *end = '\0';
-          end--;
-      }
+      out_ptr = trimWhitespace(out_ptr);
 
       // Skip empty commands
       if (strlen(out_ptr) == 0) {
@@ -144,20 +240,45 @@ void splitCommand(char *command, char *path[]) {
 
 
   for (i = 0; commands[i] != NULL; i++) {
-      char *args[50] = {NULL};
       in_ptr = commands[i];
-      int idx = 0;
-      while ((out_ptr = strsep(&in_ptr, del)) != NULL) {
-          args[idx] = out_ptr;
-          idx++;
+      int redirection_flag = 0;
+      int error_flag = 0;
+      // Check if there is a redirection in the command
+      for (int idx = 0; in_ptr[idx] != NULL; idx++) {
+          if (in_ptr[idx] == '>') {
+              if (redirection_flag == 1) {
+                  // Then we have an error so display error and go to next command
+                  handleError();
+                  error_flag = 1;
+                  break;
+              }
+              redirection_flag = 1;
+          }
       }
-      args[idx] = NULL;  // Null-terminate the args array
-      // Now we need to complete this command
-      // Check Path
-      command_exists_flag = constructAndCheckPath(args[0], path, full_path);
-      // Handle Command
-      handleCommand(args, path, command_exists_flag, full_path);
-      pid_count++;
+      if (error_flag == 1) {
+          continue;
+      }
+      else if (redirection_flag == 1) {
+          handleRedirection(commands[i], path, full_path);
+          pid_count++;
+      } else {
+          char *args[50] = {NULL};
+
+          int idx = 0;
+          while ((out_ptr = strsep(&in_ptr, del)) != NULL) {
+              args[idx] = out_ptr;
+              idx++;
+          }
+          args[idx] = NULL;  // Null-terminate the args array
+          // Now we need to complete this command
+          // Check Path
+          command_exists_flag = constructAndCheckPath(args[0], path, full_path);
+          // Handle Command
+          handleCommand(args, path, command_exists_flag, full_path);
+          pid_count++;
+      }
+
+
   }
 
   // Wait for all child processes to finish
@@ -169,7 +290,6 @@ void splitCommand(char *command, char *path[]) {
 
 
 int main() {
-
   char *command = NULL;
   size_t command_size = 0;
 
