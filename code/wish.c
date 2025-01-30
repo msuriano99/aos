@@ -10,48 +10,13 @@
 #include <unistd.h>
 #include <errno.h>
 #include <limits.h>
+#include <ctype.h>
+
+// NEED TO ADD CONSTANTS INSTEAD OF HARD CODED VALUES
 
 void handleError() {
   char error_message[30] = "An error has occurred\n";
   write(STDERR_FILENO, error_message, strlen(error_message));
-}
-
-
-// Function to split the command into arguments
-int splitCommand(char *command, char *args[], const char *del) {
-  int i = 0;
-  char *in_ptr = command;
-  char *out_ptr;
-
-  while ((out_ptr = strsep(&in_ptr, del)) != NULL) {
-      args[i++] = out_ptr;
-  }
-  args[i] = NULL;  // Null-terminate the args array
-  return i;        // Return the number of arguments
-}
-
-// Function to construct the full path and check if the file exists
-int constructAndCheckPath(char *out_ptr, char *path[], char *full_path) {
-  for (int idx = 0; path[idx] != NULL; ++idx) {
-      snprintf(full_path, PATH_MAX, "%s/%s", path[idx], out_ptr);
-
-      if (access(full_path, X_OK) == 0) {
-          printf("File '%s' exists.\n", full_path);
-          return 1;  // File found and executable
-      }
-  }
-  return 0;  // File not found in any path
-}
-
-// Main function to check the path
-void checkPath(char *args[], int *command_exists_flag, char *full_path, char *command, char *path[]) {
-  const char del[2] = " ";  // Delimiter for splitting the command
-
-  // Step 1: Split the command into arguments
-  splitCommand(command, args, del);
-
-  // Step 2: Check if the command exists in any path
-  *command_exists_flag = constructAndCheckPath(args[0], path, full_path);
 }
 
 void handleCdCommand(char *args[]) {
@@ -87,18 +52,22 @@ void handlePathCommand(char *args[], char *path[]) {
 }
 
 void handleExternalCommand(int command_exists_flag, char *full_path, char *args[]) {
+  //printf("%d\n", 1);
+  //printf("Command FLAG: %d\n", command_exists_flag);
   if (command_exists_flag == 1) {
       pid_t pid = fork();
       if (pid == 0) {
+          //printf("FULL PATH: %s\n", full_path);
+          for (int i = 0; args[i] != NULL; i++) {
+              printf("%s", args[i]);
+          }
+
           // Child process: Execute the command
           execv(full_path, args);
           // If execv fails, exit the child process
           perror("execv failed");
           exit(1);
-      } else if (pid > 0) {
-          // Parent process: Wait for the child to finish
-          waitpid(pid, NULL, 0);
-      } else {
+      } else if (pid == -1) {
           // Fork failed
           perror("fork failed");
       }
@@ -120,6 +89,85 @@ void handleCommand(char *args[], char *path[], int command_exists_flag, char *fu
   }
 }
 
+// Function to construct the full path and check if the file exists
+int constructAndCheckPath(char *out_ptr, char *path[], char *full_path) {
+  for (int idx = 0; path[idx] != NULL; ++idx) {
+      snprintf(full_path, PATH_MAX, "%s/%s", path[idx], out_ptr);
+
+      if (access(full_path, X_OK) == 0) {
+          return 1;  // File found and executable
+      }
+  }
+  return 0;  // File not found in any path
+}
+
+
+// Function to split the command into arguments
+void splitCommand(char *command, char *path[]) {
+  int pids[50] = {0};
+  char full_path[1024];  // Buffer for full path
+  int command_exists_flag = 0;
+
+  int i = 0;
+  char *in_ptr = command;
+  char *out_ptr;
+  int pid_count = 0;
+  const char *del1 = "&";
+  const char *del = " ";
+
+
+  char *commands[50] = {NULL};
+
+  // If there is '&', then send command off and grab the new command
+  // Will need to fork, then if it's the child you would break, if its the parent then we reset the args array and begin again
+
+  // Check for ampersand first to split it up by multiple commands
+
+  while ((out_ptr = strsep(&in_ptr, del1)) != NULL) {
+      // Trim leading and trailing whitespace
+      // Trim leading spaces
+      while (isspace((unsigned char)*out_ptr)) out_ptr++;
+      // Trim trailing spaces
+      char *end = out_ptr + strlen(out_ptr) - 1;
+      while (end > out_ptr && isspace((unsigned char)*end)) {
+          *end = '\0';
+          end--;
+      }
+
+      // Skip empty commands
+      if (strlen(out_ptr) == 0) {
+          continue;
+      }
+      commands[i] = out_ptr;
+      i++;
+  }
+
+
+  for (i = 0; commands[i] != NULL; i++) {
+      char *args[50] = {NULL};
+      in_ptr = commands[i];
+      int idx = 0;
+      while ((out_ptr = strsep(&in_ptr, del)) != NULL) {
+          args[idx] = out_ptr;
+          idx++;
+      }
+      args[idx] = NULL;  // Null-terminate the args array
+      // Now we need to complete this command
+      // Check Path
+      command_exists_flag = constructAndCheckPath(args[0], path, full_path);
+      // Handle Command
+      handleCommand(args, path, command_exists_flag, full_path);
+      pid_count++;
+  }
+
+  // Wait for all child processes to finish
+  for (int i = 0; i < pid_count; i++) {
+      wait(NULL);
+  }
+}
+
+
+
 int main() {
 
   char *command = NULL;
@@ -133,8 +181,6 @@ int main() {
 
 
   while (1) {
-      int command_exists_flag = 0;
-
       printf("wish> ");
       size_t len = getline(&command, &command_size, stdin);
 
@@ -142,20 +188,17 @@ int main() {
       if (len > 0 && command[len - 1] == '\n') {
           command[len - 1] = '\0';
       }
-      printf("You entered: %s\n", command);
+      //printf("You entered: %s\n", command);
 
-      //      Only the first command you check so yes we need to split it but we only check the first one.
+
+      //Only the first command you check so yes we need to split it but we only check the first one.
       //Then could have redirections, multiple commands as well so need to look out for the & character and the > character
-
-      char *args[50] = {NULL};
-      char full_path[1024];  // Buffer for full path
-
-      checkPath(args, &command_exists_flag, full_path, command, path);
-
-      handleCommand(args, path, command_exists_flag, full_path);
+      splitCommand(command, path);
   }
 
   free(command);
+
+
   return 0;
 }
 
